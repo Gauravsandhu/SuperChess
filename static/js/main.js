@@ -39,21 +39,39 @@ function renderBoard(fen){
 
 
 
-function createSquare(container,piece, rowIndex){
+// Helper function to map FEN characters to image filenames
+function getPieceImageSrc(pieceChar) {
+    // If the character is uppercase, it is White. If lowercase, it is Black.
+    const isWhite = pieceChar === pieceChar.toUpperCase();
+    const color = isWhite ? 'w' : 'b';
+    
+    // The filename uses uppercase for the piece type (e.g., 'K', 'Q', 'N')
+    const type = pieceChar.toUpperCase();
+    
+    return `/static/pieces/${color}${type}.svg`;
+}
+
+function createSquare(container, piece, rowIndex) {
     const square = document.createElement('div');
     square.className = 'square';
-
-    // Calculate whether the square should be light or dark based on its position
+    
+    // Calculate whether the square should be light or dark
     const isBlack = (rowIndex + container.children.length) % 2 !== 0;
     square.classList.add(isBlack ? 'black-sq' : 'white-sq');
-
-    // Insert the raw piece letter for now (e.g., 'r', 'N', 'P')
+    
+    // If there is a piece, create an image element and add it to the square
     if (piece) {
-        square.innerText = piece; 
+        const img = document.createElement('img');
+        img.src = getPieceImageSrc(piece);
+        img.className = 'piece'; // We will style this class in CSS
+        
+        // Prevent the default browser behavior of ghost-dragging images
+        img.draggable = false; 
+        
+        square.appendChild(img);
     }
-
+    
     container.appendChild(square);
-
 }
 
 

@@ -30,3 +30,12 @@
 .black-sq {
     background-color: #b58863;
 }
+
+
+
+.piece {
+    width: 90%; /* Slightly smaller than the square for a nice margin */
+    height: 90%;
+    user-select: none; /* Prevents highlighting the image by accident */
+    cursor: pointer; /* Prepares us for Checkpoint 2 clicking */
+}
