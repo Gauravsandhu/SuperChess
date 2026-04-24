@@ -1,0 +1,32 @@
+/* The main container for the board */
+.chessboard {
+    display: grid;
+    
+    grid-template-columns: repeat(8, 60px);
+    grid-template-rows: repeat(8, 60px);
+    border: 4px solid #333;
+    width: fit-content;
+    margin: 20px;
+}
+
+/* Individual squares */
+.square {
+    width: 60px;
+    height: 60px;
+    /* Flexbox is used here to perfectly center the piece inside the square */
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 40px;
+    font-family: Arial, sans-serif;
+    user-select: none;
+}
+
+/* The alternating colors */
+.white-sq {
+    background-color: #f0d9b5;
+}
+
+.black-sq {
+    background-color: #b58863;
+}
