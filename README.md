@@ -21,8 +21,7 @@ A chess web app built as a University project at Providence University.
 - [x] Checkpoint 4 — dice roll mode
 - [x] Checkpoint 5 — power-up card mode
 - [x] Checkpoint 6 — AI opponent
-- [ ] Checkpoint 7
-       — online multiplayer
+
 - Deadline 25 may presentation
 - June 1 final deadline
 ## How to run
