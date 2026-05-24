@@ -56,6 +56,11 @@ async function rollDice() {
     return res.json();
 }
 
+async function requestAiMove() {
+    const res = await fetch(`/api/ai-move/${gameId}`, { method: 'POST' });
+    return res.json();
+}
+
 // ================= HELPERS =================
 
 function getSquareName(index) {
@@ -72,11 +77,71 @@ function getPieceImageSrc(pieceChar) {
     return `/static/pieces/${color}${type}.svg`;
 }
 
+// ================= AI =================
+
+function showAiThinking(visible) {
+    let el = document.getElementById('ai-thinking');
+    if (!el) {
+        el = document.createElement('div');
+        el.id = 'ai-thinking';
+        el.className = 'ai-thinking';
+        el.innerHTML = '🤖 Stockfish is thinking…';
+        const statusEl = document.getElementById('status');
+        statusEl.insertAdjacentElement('afterend', el);
+    }
+    el.style.display = visible ? 'block' : 'none';
+}
+
+async function triggerAiIfNeeded(state) {
+    if (!state.vs_ai) return;
+    if (state.turn !== state.ai_color) return;
+    if (state.status !== 'active' && state.status !== 'check') return;
+
+    showAiThinking(true);
+    // Small delay so the human can see the board update before AI moves
+    await new Promise(r => setTimeout(r, 500));
+
+    const aiState = await requestAiMove();
+    showAiThinking(false);
+
+    if (aiState.error) {
+        showNotification(`❌ ${aiState.error}`, '#e74c3c', 4000);
+        return;
+    }
+
+    gameState = aiState;
+    updateStatus(aiState);
+    renderBoard(aiState.board, aiState);
+    renderPowerupPanel(aiState);
+    renderDicePanel(aiState);
+
+    if (aiState.last_event?.type === 'ai_moved') {
+        showNotification(
+            `🤖 AI moved <strong>${aiState.last_event.from} → ${aiState.last_event.to}</strong>`,
+            '#8e44ad', 2000
+        );
+    } else if (aiState.last_event?.type === 'ai_skipped') {
+        showNotification(`🤖 AI has no valid moves — turn skipped!`, '#e67e22', 2500);
+    }
+}
+
 // ================= STATUS =================
 
 function updateStatus(state) {
     const statusEl = document.getElementById('status');
-    let statusText = `Turn: <strong>${state.turn}</strong> | `;
+    let statusText = `Turn: <strong>${state.turn}</strong>`;
+
+    // Show AI label when relevant
+    if (state.vs_ai) {
+        const humanColor = state.ai_color === 'black' ? 'white' : 'black';
+        if (state.turn === state.ai_color) {
+            statusText += ` <span class="ai-turn-label">(🤖 Computer)</span>`;
+        } else {
+            statusText += ` <span class="human-turn-label">(👤 You)</span>`;
+        }
+    }
+
+    statusText += ' | ';
 
     if (state.status.includes('checkmate')) {
         statusEl.classList.add('status-checkmate');
@@ -121,7 +186,6 @@ function renderDicePanel(state) {
     }
 
     if (!panel) {
-        // Create dice panel and insert before the board
         panel = document.createElement('div');
         panel.id = 'dice-panel';
         panel.className = 'dice-panel';
@@ -132,18 +196,23 @@ function renderDicePanel(state) {
 
     const roll = state.dice_roll;
     const pieceName = roll ? (state.dice_piece_names?.[roll] || roll) : null;
-    // 1=Pawn, 2=Knight, 3=Bishop, 4=Rook, 5=Queen, 6=Any(King symbol)
     const DICE_FACES = ['', '♟', '♞', '♝', '♜', '♛', '♚'];
 
     const needsRoll = roll === null;
     const turn = state.turn;
+    const isAiTurn = state.vs_ai && state.turn === state.ai_color;
 
     panel.innerHTML = `
         <div class="dice-panel-title">🎲 Dice</div>
-        <div class="dice-turn-label">${turn.charAt(0).toUpperCase() + turn.slice(1)}'s turn</div>
+        <div class="dice-turn-label">${turn.charAt(0).toUpperCase() + turn.slice(1)}'s turn${isAiTurn ? ' 🤖' : ''}</div>
         <div class="dice-face ${needsRoll ? 'dice-waiting' : 'dice-rolled'}">${needsRoll ? '?' : DICE_FACES[roll]}</div>
         ${pieceName ? `<div class="dice-piece-label">Move a <strong>${pieceName}</strong></div>` : ''}
-        ${needsRoll ? `<button class="dice-roll-btn" id="dice-roll-btn" onclick="doRollDice()">Roll Dice</button>` : `<div class="dice-hint">Select a ${pieceName} to move</div>`}
+        ${needsRoll && !isAiTurn
+            ? `<button class="dice-roll-btn" id="dice-roll-btn" onclick="doRollDice()">Roll Dice</button>`
+            : needsRoll && isAiTurn
+                ? `<div class="dice-hint">AI is rolling…</div>`
+                : `<div class="dice-hint">${isAiTurn ? 'AI is choosing…' : `Select a ${pieceName} to move`}</div>`
+        }
     `;
 }
 
@@ -197,11 +266,10 @@ function renderPowerupPanel(state) {
     const turn = state.turn;
     const hand = state.powerup_hands?.[turn] || [];
     const pending = state.pending_powerup;
+    const isAiTurn = state.vs_ai && state.turn === state.ai_color;
 
-    // Pending instruction banner
     const banner = document.getElementById('pu-banner');
     if (pending) {
-        const pu = defs[pending.type];
         let msg = '';
         if (pending.type === 'freeze') msg = `❄️ Click an <strong>enemy piece</strong> to freeze it`;
         else if (pending.type === 'shield') msg = `🛡️ Click <strong>your piece</strong> to shield it`;
@@ -216,30 +284,38 @@ function renderPowerupPanel(state) {
         if (banner) banner.style.display = 'none';
     }
 
-    // Hand cards
     const handEl = document.getElementById('pu-hand');
     if (!handEl) return;
     handEl.innerHTML = '';
+
+    // Update the panel title to show whose turn it is
+    const titleEl = panel.querySelector('.pu-panel-title');
+    if (titleEl) {
+        titleEl.textContent = isAiTurn ? '⚡ AI Power-Ups' : '⚡ Power-Ups';
+    }
 
     if (hand.length === 0) {
         handEl.innerHTML = `<div class="pu-empty">No power-ups yet.<br>Earn one every 3 moves!</div>`;
         return;
     }
 
-    hand.forEach((puId, idx) => {
+    hand.forEach((puId) => {
         const pu = defs[puId] || { name: puId, icon: '?', description: '', color: '#888' };
         const card = document.createElement('div');
         card.className = 'pu-card';
+        // Disable cards on AI's turn
+        if (isAiTurn) card.classList.add('pu-card-disabled');
         card.style.setProperty('--pu-color', pu.color);
         card.innerHTML = `
             <div class="pu-icon">${pu.icon}</div>
             <div class="pu-name">${pu.name}</div>
             <div class="pu-desc">${pu.description}</div>
         `;
-        card.addEventListener('click', () => doActivatePowerup(puId));
+        if (!isAiTurn) {
+            card.addEventListener('click', () => doActivatePowerup(puId));
+        }
         handEl.appendChild(card);
     });
-
 }
 
 // ================= POWERUP ACTIONS =================
@@ -295,6 +371,7 @@ async function fetchGameState() {
     renderBoard(state.board, state);
     renderPowerupPanel(state);
     renderDicePanel(state);
+    await triggerAiIfNeeded(state);
 }
 
 function renderBoard(fen, state) {
@@ -328,11 +405,9 @@ function createSquare(container, piece, rowIndex, state) {
     const squareName = getSquareName(squareIndex);
     square.dataset.square = squareName;
 
-    // Frozen overlay
     if (state?.frozen_squares?.[squareName]) {
         square.classList.add('frozen-sq');
     }
-    // Shield overlay
     if (state?.shielded_squares?.[squareName]) {
         square.classList.add('shielded-sq');
     }
@@ -367,6 +442,12 @@ function createSquare(container, piece, rowIndex, state) {
 async function handleSquareClick(squareName) {
     const state = gameState;
 
+    // Block clicks during AI's turn
+    if (state?.vs_ai && state?.turn === state?.ai_color) return;
+
+    // Block clicks when game is over
+    if (state?.status && state.status !== 'active' && state.status !== 'check') return;
+
     // If a powerup is pending, resolve it
     if (state?.pending_powerup) {
         const result = await resolvePowerup(squareName);
@@ -400,11 +481,27 @@ async function handleSquareClick(squareName) {
                 renderPowerupPanel(newState);
                 renderDicePanel(newState);
                 handleLastEvent(newState);
+                selectedSquare = null;
+                legalDestinations = [];
+                removeHighlights();
+                await triggerAiIfNeeded(newState);
+            } else {
+                selectedSquare = null;
+                legalDestinations = [];
+                removeHighlights();
+            }
+        } else {
+            // Clicked a different square — try selecting it instead
+            selectedSquare = null;
+            legalDestinations = [];
+            removeHighlights();
+            const moves = await fetchLegalMoves(squareName);
+            if (moves.length > 0) {
+                selectedSquare = squareName;
+                legalDestinations = moves;
+                highlightSquares();
             }
         }
-        selectedSquare = null;
-        legalDestinations = [];
-        removeHighlights();
     }
 }
 

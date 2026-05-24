@@ -57,13 +57,48 @@ body {
     background: rgba(0,0,0,0.2);
     letter-spacing: 0.02em;
 }
-#status strong { color: #000000; }
+#status strong { color: #fff; }
 .status-check { color: #e67e22 !important; }
 .status-checkmate { color: #e74c3c !important; font-weight: 700; }
 .status-special { color: #f39c12; font-weight: 700; }
 
-/* ── Pending power-up banner ── */
+.ai-turn-label {
+    font-size: 0.82rem;
+    color: #9b59b6;
+    font-weight: 700;
+}
+.human-turn-label {
+    font-size: 0.82rem;
+    color: #27ae60;
+    font-weight: 700;
+}
 
+/* ── AI thinking indicator ── */
+.ai-thinking {
+    text-align: center;
+    padding: 8px;
+    font-size: 0.9rem;
+    color: #9b59b6;
+    font-weight: 700;
+    letter-spacing: 0.03em;
+    background: rgba(155, 89, 182, 0.08);
+    animation: aiPulse 1s ease-in-out infinite;
+}
+@keyframes aiPulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.35; }
+}
+
+/* ── Pending power-up banner ── */
+#pu-banner {
+    text-align: center;
+    padding: 10px 20px;
+    background: rgba(243, 156, 18, 0.12);
+    border-bottom: 1px solid rgba(243,156,18,0.3);
+    font-size: 0.9rem;
+    color: #f8d57e;
+    animation: pulseBanner 1.5s ease-in-out infinite;
+}
 @keyframes pulseBanner {
     0%, 100% { opacity: 1; }
     50% { opacity: 0.7; }
@@ -194,6 +229,13 @@ body {
 .pu-card:hover::before { opacity: 0.12; }
 .pu-card:active { transform: scale(0.97); }
 
+/* Disabled state for AI's turn */
+.pu-card-disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+    pointer-events: none;
+}
+
 .pu-icon { font-size: 1.6rem; text-align: center; margin-bottom: 4px; position: relative; }
 .pu-name {
     font-weight: 700;
@@ -209,22 +251,6 @@ body {
     text-align: center;
     line-height: 1.4;
     position: relative;
-}
-
-/* Double move ready banner */
-.pu-double-active {
-    background: linear-gradient(135deg, #f39c12, #e67e22);
-    color: #1a1a2e;
-    font-weight: 700;
-    font-size: 0.82rem;
-    text-align: center;
-    padding: 8px 10px;
-    border-radius: 8px;
-    animation: pulseGold 1.2s ease-in-out infinite;
-}
-@keyframes pulseGold {
-    0%, 100% { box-shadow: 0 0 8px rgba(243,156,18,0.5); }
-    50%       { box-shadow: 0 0 20px rgba(243,156,18,0.9); }
 }
 
 /* ── Dice Panel ── */

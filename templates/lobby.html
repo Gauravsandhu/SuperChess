@@ -12,9 +12,40 @@
         <h1>♔ SuperChess ♚</h1>
         <p class="subtitle">Choose your game mode</p>
 
+        <!-- Opponent selector -->
+        <div class="opponent-selector">
+            <label class="opp-option">
+                <input type="radio" name="opponent" id="opp-human" value="human" checked onchange="updateOpponent()">
+                👥 Local 2-Player
+            </label>
+            <label class="opp-option">
+                <input type="radio" name="opponent" id="opp-ai" value="ai" onchange="updateOpponent()">
+                🤖 vs Computer
+            </label>
+        </div>
+
+        <!-- AI difficulty (hidden until AI selected) -->
+        <div id="ai-settings" style="display:none; margin-bottom: 28px;">
+            <label class="diff-label-text">
+                Difficulty: <span id="diff-label">5</span> / 10
+            </label>
+            <input
+                type="range"
+                id="difficulty-slider"
+                min="1" max="10" value="5"
+                oninput="document.getElementById('diff-label').textContent = this.value"
+                class="diff-slider"
+            >
+            <div class="diff-hints">
+                <span>1 — Beginner</span>
+                <span>5 — Intermediate</span>
+                <span>10 — Grandmaster</span>
+            </div>
+        </div>
+
         <div class="mode-grid">
             {% for mode_id, mode in game_modes.items() %}
-            <div class="mode-powerup" data-mode="{{ mode_id }}">
+            <div class="mode-card" data-mode="{{ mode_id }}">
                 <div class="mode-icon">
                     {% if mode_id == 'classic' %}♟{% endif %}
                     {% if mode_id == 'dice' %}🎲{% endif %}
@@ -30,11 +61,11 @@
                     {% if mode.uses_powerups %}
                     <span class="feature">⚡ Power-Ups</span>
                     {% endif %}
-                    {% if not mode.uses_dice and not mode.uses_powerups and not mode.uses_powerups %}
+                    {% if not mode.uses_dice and not mode.uses_powerups %}
                     <span class="feature">📜 Standard Rules</span>
                     {% endif %}
                 </div>
-                <form action="/create-game" method="POST">
+                <form action="/create-game" method="POST" class="mode-form">
                     <input type="hidden" name="mode" value="{{ mode_id }}">
                     <button type="submit" class="play-btn">Play</button>
                 </form>
@@ -42,5 +73,38 @@
             {% endfor %}
         </div>
     </div>
+
+    <script>
+    function updateOpponent() {
+        const isAi = document.getElementById('opp-ai').checked;
+        document.getElementById('ai-settings').style.display = isAi ? 'block' : 'none';
+    }
+
+    // Use 'click' instead of 'change' — fires instantly and reliably
+    document.getElementById('opp-human').addEventListener('click', updateOpponent);
+    document.getElementById('opp-ai').addEventListener('click', updateOpponent);
+
+    // Run on page load so initial state is correct
+    updateOpponent();
+
+    document.querySelectorAll('.mode-form').forEach(form => {
+        form.addEventListener('submit', () => {
+            const isAi = document.getElementById('opp-ai').checked;
+            const difficulty = document.getElementById('difficulty-slider').value;
+
+            const f1 = document.createElement('input');
+            f1.type = 'hidden';
+            f1.name = 'vs_ai';
+            f1.value = isAi ? 'true' : 'false';
+            form.appendChild(f1);
+
+            const f2 = document.createElement('input');
+            f2.type = 'hidden';
+            f2.name = 'difficulty';
+            f2.value = difficulty;
+            form.appendChild(f2);
+        });
+    });
+</script>
 </body>
 </html>

@@ -1,5 +1,6 @@
 from flask import Flask, jsonify, render_template, request, redirect, url_for, session
 import chess
+import chess.engine
 import uuid
 import random
 
@@ -8,7 +9,20 @@ app.secret_key = 'your-secret-key-change-in-production'
 
 games = {}
 
-# ─── Power-up definitions ───────────────────────────────────────────────────
+# ─── Stockfish detection ─────────────────────────────────────────────────────
+STOCKFISH_PATH = None
+STOCKFISH_AVAILABLE = False
+for _path in ['stockfish', '/usr/local/bin/stockfish', '/opt/homebrew/bin/stockfish', '/usr/games/stockfish']:
+    try:
+        _e = chess.engine.SimpleEngine.popen_uci(_path)
+        _e.quit()
+        STOCKFISH_PATH = _path
+        STOCKFISH_AVAILABLE = True
+        break
+    except Exception:
+        pass
+
+# ─── Power-up definitions ────────────────────────────────────────────────────
 POWERUPS = {
     "freeze": {
         "id": "freeze",
@@ -96,7 +110,7 @@ GAME_MODES = {
 }
 
 
-def create_game(mode="classic"):
+def create_game(mode="classic", vs_ai=False, ai_difficulty=5):
     game_id = str(uuid.uuid4())[:8]
     board = chess.Board()
     games[game_id] = {
@@ -114,11 +128,15 @@ def create_game(mode="classic"):
         # Power-up state
         "powerup_hands": {"white": [], "black": []},
         "move_count": {"white": 0, "black": 0},
-        "frozen_squares": {},      # square -> turns_remaining
-        "shielded_squares": {},    # square -> turns_remaining
-        "captured_pieces": {"white": [], "black": []},  # pieces captured FROM each side
-        "pending_powerup": None,   # {"type": ..., "player": ..., "stage": ...}
-        "last_event": None,        # for frontend notifications
+        "frozen_squares": {},
+        "shielded_squares": {},
+        "captured_pieces": {"white": [], "black": []},
+        "pending_powerup": None,
+        "last_event": None,
+        # AI state
+        "vs_ai": vs_ai,
+        "ai_color": "black",
+        "ai_difficulty": ai_difficulty,
     }
     return game_id
 
@@ -148,7 +166,7 @@ def tick_effects(game):
         game["shielded_squares"][sq] -= 1
 
 
-# ─── Routes ─────────────────────────────────────────────────────────────────
+# ─── Routes ──────────────────────────────────────────────────────────────────
 
 @app.route('/')
 def lobby():
@@ -160,7 +178,9 @@ def create_game_route():
     mode = request.form.get('mode', 'classic')
     if mode not in GAME_MODES:
         mode = 'classic'
-    game_id = create_game(mode)
+    vs_ai = request.form.get('vs_ai') == 'true'
+    ai_difficulty = int(request.form.get('difficulty', 5))
+    game_id = create_game(mode, vs_ai=vs_ai, ai_difficulty=ai_difficulty)
     return redirect(url_for('game', game_id=game_id))
 
 
@@ -198,6 +218,9 @@ def get_state(game_id):
         "last_event": game["last_event"],
         "powerup_defs": POWERUPS,
         "dice_piece_names": DICE_PIECE_NAMES,
+        "vs_ai": game.get("vs_ai", False),
+        "ai_color": game.get("ai_color", "black"),
+        "ai_difficulty": game.get("ai_difficulty", 5),
     })
 
 
@@ -214,13 +237,11 @@ def roll_dice(game_id):
     board = game["board_obj"]
     current_color = chess.WHITE if game["turn"] == "white" else chess.BLACK
 
-    # Roll until the player has at least one legal move with that piece type
-    # (prevents deadlocks; max 10 attempts then fall back to 6=any)
     for attempt in range(10):
         roll = random.randint(1, 6)
         piece_type = DICE_PIECE_MAP[roll]
         if piece_type is None:
-            break  # 6 = any, always valid
+            break
         has_move = any(
             board.piece_at(m.from_square) and
             board.piece_at(m.from_square).piece_type == piece_type and
@@ -230,7 +251,7 @@ def roll_dice(game_id):
         if has_move:
             break
     else:
-        roll = 6  # fallback
+        roll = 6
 
     game["dice_roll"] = roll
     game["dice_used"] = False
@@ -258,18 +279,15 @@ def get_legal_moves(game_id):
     if not piece or piece.color != current_turn_color:
         return jsonify([])
 
-    # Frozen pieces can't move
     if square_name in game["frozen_squares"]:
         return jsonify([])
 
-    # Dice restriction: piece must match dice roll
     uses_dice = GAME_MODES[game["mode"]].get("uses_dice", False)
     if uses_dice:
         roll = game.get("dice_roll")
         if roll is None:
-            # Must roll before moving
             return jsonify([])
-        required_type = DICE_PIECE_MAP.get(roll)  # None means any
+        required_type = DICE_PIECE_MAP.get(roll)
         if required_type is not None and piece.piece_type != required_type:
             return jsonify([])
 
@@ -277,7 +295,6 @@ def get_legal_moves(game_id):
     for m in board.legal_moves:
         if m.from_square == from_square:
             dest = chess.SQUARE_NAMES[m.to_square]
-            # Can't capture shielded pieces (unless it's the pending_powerup bomb action)
             if dest in game["shielded_squares"]:
                 continue
             moves.append(dest)
@@ -301,13 +318,11 @@ def make_move(game_id):
         return jsonify({"error": "Invalid move format"}), 400
 
     piece = board.piece_at(move.from_square)
-    # Auto-promote
     if piece and piece.piece_type == chess.PAWN:
         if (board.turn == chess.WHITE and chess.square_rank(move.to_square) == 7) or \
                 (board.turn == chess.BLACK and chess.square_rank(move.to_square) == 0):
             move = chess.Move(move.from_square, move.to_square, promotion=chess.QUEEN)
 
-    # Dice restriction validation
     uses_dice = GAME_MODES[game["mode"]].get("uses_dice", False)
     if uses_dice:
         roll = game.get("dice_roll")
@@ -320,18 +335,16 @@ def make_move(game_id):
     if move not in board.legal_moves:
         return jsonify({"error": "Illegal move"}), 400
 
-    # Track captured piece
     captured = board.piece_at(move.to_square)
     if captured:
         cap_owner = "white" if captured.color == chess.WHITE else "black"
         game["captured_pieces"][cap_owner].append(captured.symbol())
 
-    # Remove freeze/shield from moved piece's new square
     dest_name = chess.SQUARE_NAMES[move.to_square]
+    src_name = chess.SQUARE_NAMES[move.from_square]
+
     if dest_name in game["shielded_squares"]:
         del game["shielded_squares"][dest_name]
-    # Also move shield/freeze if piece moved away
-    src_name = chess.SQUARE_NAMES[move.from_square]
     if src_name in game["shielded_squares"]:
         game["shielded_squares"][dest_name] = game["shielded_squares"].pop(src_name)
     if src_name in game["frozen_squares"]:
@@ -345,14 +358,12 @@ def make_move(game_id):
 
     uses_powerups = GAME_MODES[game["mode"]].get("uses_powerups", False)
 
-    # Switch turn and reset dice for next player
     game["turn"] = "black" if current_player == "white" else "white"
     if uses_dice:
         game["dice_roll"] = None
         game["dice_used"] = False
     tick_effects(game)
 
-    # Award power-up every 3 moves per player
     if uses_powerups and game["move_count"][current_player] % 3 == 0:
         awarded = award_powerup(game, current_player)
         if awarded:
@@ -362,7 +373,136 @@ def make_move(game_id):
     return jsonify(_full_state(game))
 
 
-# ─── Power-up activation ────────────────────────────────────────────────────
+# ─── AI move endpoint ─────────────────────────────────────────────────────────
+
+@app.route('/api/ai-move/<game_id>', methods=['POST'])
+def ai_move(game_id):
+    if game_id not in games:
+        return jsonify({"error": "Game not found"}), 404
+    game = games[game_id]
+
+    if not game.get('vs_ai'):
+        return jsonify({"error": "Not an AI game"}), 400
+    if game['turn'] != game['ai_color']:
+        return jsonify({"error": "Not AI's turn"}), 400
+    if game['status'] not in ('active', 'check'):
+        return jsonify({"error": "Game over"}), 400
+    if not STOCKFISH_AVAILABLE:
+        return jsonify({"error": "Stockfish not installed. Run: brew install stockfish (Mac) or sudo apt install stockfish (Linux)"}), 500
+
+    board = game['board_obj']
+    uses_dice = GAME_MODES[game['mode']].get('uses_dice', False)
+    ai_chess_color = chess.WHITE if game['ai_color'] == 'white' else chess.BLACK
+    game["last_event"] = None
+
+    # Auto-roll dice for AI
+    if uses_dice and game['dice_roll'] is None:
+        for _ in range(10):
+            roll = random.randint(1, 6)
+            piece_type = DICE_PIECE_MAP[roll]
+            if piece_type is None:
+                break
+            has_move = any(
+                board.piece_at(m.from_square) and
+                board.piece_at(m.from_square).piece_type == piece_type and
+                board.piece_at(m.from_square).color == ai_chess_color
+                for m in board.legal_moves
+            )
+            if has_move:
+                break
+        else:
+            roll = 6
+        game['dice_roll'] = roll
+        game['dice_used'] = False
+
+    # Build allowed moves (respects dice + freeze + shield)
+    allowed_moves = []
+    for m in board.legal_moves:
+        src_name = chess.SQUARE_NAMES[m.from_square]
+        dest_name = chess.SQUARE_NAMES[m.to_square]
+        if src_name in game['frozen_squares']:
+            continue
+        if dest_name in game['shielded_squares']:
+            continue
+        if uses_dice and game['dice_roll'] is not None:
+            required_type = DICE_PIECE_MAP.get(game['dice_roll'])
+            if required_type is not None:
+                piece = board.piece_at(m.from_square)
+                if not piece or piece.piece_type != required_type:
+                    continue
+        allowed_moves.append(m)
+
+    # No valid moves: skip AI turn
+    if not allowed_moves:
+        game['turn'] = 'white' if game['ai_color'] == 'black' else 'black'
+        if uses_dice:
+            game['dice_roll'] = None
+            game['dice_used'] = False
+        game['last_event'] = {'type': 'ai_skipped'}
+        return jsonify(_full_state(game))
+
+    # Ask Stockfish for the best move
+    difficulty = game.get('ai_difficulty', 5)
+    skill_level = min(20, difficulty * 2)           # 1–10 → 2–20
+    think_time = 0.05 + (difficulty / 10) * 0.45   # 0.05s – 0.5s
+
+    try:
+        with chess.engine.SimpleEngine.popen_uci(STOCKFISH_PATH) as engine:
+            engine.configure({"Skill Level": skill_level})
+            result = engine.play(
+                board,
+                chess.engine.Limit(time=think_time),
+                root_moves=allowed_moves
+            )
+            chosen_move = result.move
+    except Exception:
+        chosen_move = random.choice(allowed_moves)  # Fallback if engine fails
+
+    # Auto-promote for AI
+    piece = board.piece_at(chosen_move.from_square)
+    if piece and piece.piece_type == chess.PAWN:
+        if (board.turn == chess.WHITE and chess.square_rank(chosen_move.to_square) == 7) or \
+                (board.turn == chess.BLACK and chess.square_rank(chosen_move.to_square) == 0):
+            chosen_move = chess.Move(chosen_move.from_square, chosen_move.to_square, promotion=chess.QUEEN)
+
+    # Track captured piece
+    captured = board.piece_at(chosen_move.to_square)
+    if captured:
+        cap_owner = "white" if captured.color == chess.WHITE else "black"
+        game["captured_pieces"][cap_owner].append(captured.symbol())
+
+    src_name  = chess.SQUARE_NAMES[chosen_move.from_square]
+    dest_name = chess.SQUARE_NAMES[chosen_move.to_square]
+
+    if dest_name in game["shielded_squares"]:
+        del game["shielded_squares"][dest_name]
+    if src_name in game["shielded_squares"]:
+        game["shielded_squares"][dest_name] = game["shielded_squares"].pop(src_name)
+    if src_name in game["frozen_squares"]:
+        del game["frozen_squares"][src_name]
+
+    board.push(chosen_move)
+
+    ai_player = game['ai_color']
+    game["move_count"][ai_player] = game["move_count"].get(ai_player, 0) + 1
+    game["board"] = board.fen()
+
+    uses_powerups = GAME_MODES[game["mode"]].get("uses_powerups", False)
+    game["turn"] = "black" if ai_player == "white" else "white"
+    if uses_dice:
+        game["dice_roll"] = None
+        game["dice_used"] = False
+    tick_effects(game)
+
+    if uses_powerups and game["move_count"][ai_player] % 3 == 0:
+        award_powerup(game, ai_player)  # AI earns cards but doesn't play them
+
+    game["last_event"] = {"type": "ai_moved", "from": src_name, "to": dest_name}
+    _update_status(game, board)
+    return jsonify(_full_state(game))
+
+
+# ─── Power-up activation ─────────────────────────────────────────────────────
 
 @app.route('/api/powerup/activate/<game_id>', methods=['POST'])
 def activate_powerup(game_id):
@@ -382,14 +522,11 @@ def activate_powerup(game_id):
     if not uses_powerups:
         return jsonify({"error": "Power-ups not enabled in this mode"}), 400
 
-    # Instant power-ups
-
     if pu_id == "resurrect":
         caps = game["captured_pieces"][player]
         if not caps:
             return jsonify({"error": "No captured pieces to resurrect"}), 400
         hand.remove(pu_id)
-        # Find an empty back-rank square to place a pawn
         board = game["board_obj"]
         back_rank = 0 if player == "white" else 7
         placed = False
@@ -407,7 +544,6 @@ def activate_powerup(game_id):
             return jsonify({"error": "No empty square on back rank"}), 400
         return jsonify(_full_state(game))
 
-    # Target-requiring power-ups → set pending state, frontend will pick target
     if pu_id in ("freeze", "shield", "teleport", "bomb"):
         game["pending_powerup"] = {"type": pu_id, "player": player, "stage": "select_target"}
         game["last_event"] = {"type": "powerup_pending", "powerup": pu_id}
@@ -433,7 +569,6 @@ def resolve_powerup(game_id):
     game["last_event"] = None
 
     if pu_id == "freeze":
-        # Freeze enemy piece on target_square
         piece = board.piece_at(chess.SQUARE_NAMES.index(target_square))
         enemy_color = chess.BLACK if player == "white" else chess.WHITE
         if not piece or piece.color != enemy_color:
@@ -444,7 +579,6 @@ def resolve_powerup(game_id):
         game["last_event"] = {"type": "powerup_used", "powerup": pu_id, "player": player, "square": target_square}
 
     elif pu_id == "shield":
-        # Shield own piece
         piece = board.piece_at(chess.SQUARE_NAMES.index(target_square))
         own_color = chess.WHITE if player == "white" else chess.BLACK
         if not piece or piece.color != own_color:
@@ -455,7 +589,6 @@ def resolve_powerup(game_id):
         game["last_event"] = {"type": "powerup_used", "powerup": pu_id, "player": player, "square": target_square}
 
     elif pu_id == "bomb":
-        # Destroy enemy piece (not King)
         sq_idx = chess.SQUARE_NAMES.index(target_square)
         piece = board.piece_at(sq_idx)
         enemy_color = chess.BLACK if player == "white" else chess.WHITE
@@ -463,7 +596,6 @@ def resolve_powerup(game_id):
             return jsonify({"error": "Must target an enemy non-King piece"}), 400
         board.remove_piece_at(sq_idx)
         game["board"] = board.fen()
-        # Remove any shields/freeze on that square
         game["shielded_squares"].pop(target_square, None)
         game["frozen_squares"].pop(target_square, None)
         game["powerup_hands"][player].remove(pu_id)
@@ -472,7 +604,6 @@ def resolve_powerup(game_id):
 
     elif pu_id == "teleport":
         if pending["stage"] == "select_target":
-            # First click: select which of your pieces to teleport
             sq_idx = chess.SQUARE_NAMES.index(target_square)
             piece = board.piece_at(sq_idx)
             own_color = chess.WHITE if player == "white" else chess.BLACK
@@ -483,7 +614,6 @@ def resolve_powerup(game_id):
             pending["piece_type"] = piece.piece_type
             return jsonify(_full_state(game))
         elif pending["stage"] == "select_destination":
-            # Second click: pick empty destination
             sq_idx = chess.SQUARE_NAMES.index(target_square)
             if board.piece_at(sq_idx) is not None:
                 return jsonify({"error": "Destination must be empty"}), 400
@@ -492,7 +622,6 @@ def resolve_powerup(game_id):
             board.remove_piece_at(src_idx)
             board.set_piece_at(sq_idx, piece)
             game["board"] = board.fen()
-            # Move shield if applicable
             if pending["piece_square"] in game["shielded_squares"]:
                 game["shielded_squares"][target_square] = game["shielded_squares"].pop(pending["piece_square"])
             game["powerup_hands"][player].remove(pu_id)
@@ -514,10 +643,9 @@ def cancel_powerup(game_id):
     return jsonify(_full_state(game))
 
 
-# ─── Helpers ────────────────────────────────────────────────────────────────
+# ─── Helpers ─────────────────────────────────────────────────────────────────
 
 def _update_status(game, board):
-    # Check if a king was removed (e.g. by bomb power-up)
     white_king = board.pieces(chess.KING, chess.WHITE)
     black_king = board.pieces(chess.KING, chess.BLACK)
     if not white_king:
@@ -557,6 +685,9 @@ def _full_state(game):
         "powerup_defs": POWERUPS,
         "captured_pieces": game["captured_pieces"],
         "dice_piece_names": DICE_PIECE_NAMES,
+        "vs_ai": game.get("vs_ai", False),
+        "ai_color": game.get("ai_color", "black"),
+        "ai_difficulty": game.get("ai_difficulty", 5),
     }
 
 
